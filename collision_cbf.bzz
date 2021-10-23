@@ -126,8 +126,8 @@ function avoid_collision_cbf(control_input){
     neighbourhoodPos = {}
     D_safe = 0.5
     counter = 0
-    pij = 10.0 #increase for more aggressive abidance with constraint
-    while(i < size(shared_location)*0+10){
+    pij = 20.0 #increase for more aggressive abidance with constraint
+    while(i < size(shared_location)){
         if(i != id){
             key = string.concat("msg",string.tostring(i))
             retrieved_data = shared_location.get(key)
