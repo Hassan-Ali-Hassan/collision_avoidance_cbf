@@ -1,0 +1,178 @@
+random_walk_vel = {}
+random_walk_vel[0] = 0.0
+random_walk_vel[1] = 0.0
+
+
+
+function set_velocity2(u){
+    #this function bridges the point
+    l = 0.1 #the smaller this value is, the more aggressive the robot is in turning
+    wactual_idth = 0.17
+    left = 0.0
+    right = 0.0
+    phi = pose.orientation.yaw #the heading is in radians
+    # log("current heading",phi)
+    v = math.cos(phi)*u[0]+math.sin(phi)*u[1];
+    omega = 1/l*(-math.sin(phi)*u[0]+math.cos(phi)*u[1])
+    left = v + omega*wactual_idth*0.5
+    right = v - omega*wactual_idth*0.5
+    set_wheels(right*100.0, left*100.0) #notice, set_wheels takes the velocity with cm/sec not m/sec, so we have to convert our result to cm/sec
+}
+
+function push_info(){
+    my_key = string.concat("msg",string.tostring(id)) #pushing my landing time to the shared table
+    my_pos = {}
+    my_pos[0] = pose.position.x
+    my_pos[1] = pose.position.y
+    shared_location.put(my_key,my_pos)
+}
+
+function avoid_walls(){
+
+    #creating variables that will be the contain the "obstacle vectors"  
+    # of prox. sensors (distance * sin or cos the angle of the sensor)
+    vec_prox_x = 0.0
+    vec_prox_y = 0.0
+
+    #looping on all proximity sensors 
+    i = 0
+    while(i < 8){
+        if(proximity[i]["value"] > 0){ #considering only sensors that feel an obstacle
+            distance = -math.log((proximity[i]["value"]+0.085)/4.14)/33.0
+            vec_prox_x = vec_prox_x + distance * math.cos(proximity[i]["angle"])
+            vec_prox_y = vec_prox_y + distance * math.sin(proximity[i]["angle"])
+        }
+        i = i + 1
+    }
+
+    #now the escape vector will be the negative of the resultant vector 
+    # calculated above
+    escape_vector = {}
+    escape_vector[0] = -vec_prox_x
+    escape_vector[1] = -vec_prox_y
+    escape_vel = {}
+    escape_vel = pursue_vector_in_local_axes(escape_vector)
+    return escape_vel
+}
+
+function pursue_vector_in_local_axes(input_vector){
+    #this function takes a vector to be persued in local axes and adjusts 
+    #the wheel speeds to go in the direction of the given vector. Also, this 
+    #function makes sure that the robot will not step into the charging 
+    #region by mistake duing this exploration phase.
+    k = 1.750
+    base_speed = 10.0 #this is the default forward speed of robot in cm/sec
+
+    if(input_vector[1] == 0 and input_vector[0] == 0){ #meaning no obstacle encountered
+        speed_right = base_speed 
+        speed_left = base_speed 
+    }
+    else{
+        theta = math.atan(input_vector[1],input_vector[0])
+        error = 0.0 - theta
+        speed_right = base_speed * 0.1 - k * error
+        speed_left = base_speed * 0.1 + k * error
+    }
+
+    xc = 0.0
+    yc = 0.0
+    push_info()
+    #calculating x_dot and y_dot from right and left speeds
+    width = 0.17
+    v = (speed_right/100.0+speed_left/100.0)*0.5 #we divided by 100 to express speed in m/sec
+    omegaL = (speed_right/100.0-speed_left/100.0)
+    theta = pose.orientation.yaw
+    ux = math.cos(theta)*v - math.sin(theta)*omegaL
+    uy = math.sin(theta)*v + math.cos(theta)*omegaL
+
+    sol = {}
+    sol[0] = ux
+    sol[1] = uy
+
+    return sol
+}
+
+
+function avoid_collision_cbf(control_input){
+    my_pos = {}
+    my_pos[0] = pose.position.x
+    my_pos[1] = pose.position.y
+
+    a = {}
+    a[0] = 1.0
+    a[1] = 0.0
+    a[2] = 0.0
+    a[3] = 1.0
+
+    b = {}
+    b[0] = -control_input[0]
+    b[1] = -control_input[1]
+
+    u_max = 1.0
+    bndl = {}
+    bndl[0] = -u_max  
+    bndl[1] = -u_max
+    bndu = {}
+    bndu[0] = u_max  
+    bndu[1] = u_max
+
+    c = {}
+
+    #construcing CBF constraints for collision avoidance with other robots
+    # we want to solve u* = min ||u-u_nom||^2, but the solver can solve 
+    # u* = min 0.5*u^T A U + b^T u, the two forms are equivalent if A = identity
+    # and b = -u_nom
+    i = 0
+    neighbourhoodPos = {}
+    D_safe = 0.5
+    counter = 0
+    pij = 10.0 #increase for more aggressive abidance with constraint
+    while(i < size(shared_location)*0+10){
+        if(i != id){
+            key = string.concat("msg",string.tostring(i))
+            retrieved_data = shared_location.get(key)
+            if(retrieved_data != nil){
+                neighbourhoodPos[2*i] = retrieved_data[0] 
+                neighbourhoodPos[2*i+1] = retrieved_data[1]
+                dij = math.sqrt((my_pos[0]-neighbourhoodPos[2*i])^2+(my_pos[1]-neighbourhoodPos[2*i+1])^2)
+                hij = dij - D_safe
+                c[3*counter] = -(my_pos[0]-neighbourhoodPos[2*i])/dij
+                c[3*counter + 1] = -(my_pos[1]-neighbourhoodPos[2*i+1])/dij
+                c[3*counter + 2] = pij * hij 
+                counter = counter + 1
+            }
+        }
+        else{
+            neighbourhoodPos[2*i] = pose.position.x  
+            neighbourhoodPos[2*i+1] = pose.position.y 
+        }
+        i = i + 1
+    }
+    
+    #solving the qp problem constructed thus far
+    sol = qp_solver(a, b, c, bndl, bndu)  #in case there are boundaries on the control action u
+    # sol = qp_solver(a, b, c)  #in case of no boundaries
+    return sol
+}
+
+
+
+
+# Executed at init time
+function init() {
+    shared_location = stigmergy.create(2)
+}
+ 
+# Executed every time step
+function step() {
+    push_info()
+    random_walk_vel = avoid_walls()
+    random_walk_vel = avoid_collision_cbf(random_walk_vel)
+    set_velocity2(random_walk_vel)
+
+}
+
+# Execute at exit
+function destroy() {
+    # io.fclose(data_log)
+}
